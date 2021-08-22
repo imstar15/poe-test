@@ -5,6 +5,12 @@
 /// <https://substrate.dev/docs/en/knowledgebase/runtime/frame>
 pub use pallet::*;
 
+#[cfg(test)]
+mod mock;
+
+#[cfg(test)]
+mod tests;
+
 #[frame_support::pallet]
 pub mod pallet {
 	use frame_support::pallet_prelude::*;
@@ -16,6 +22,9 @@ pub mod pallet {
 	pub trait Config: frame_system::Config {
 		/// Because this pallet emits events, it depends on the runtime's definition of an event.
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
+
+		#[pallet::constant]
+		type ClaimMaxLen: Get<u8>;
 	}
 
 	#[pallet::pallet]
@@ -25,12 +34,7 @@ pub mod pallet {
 	// The pallet's runtime storage items.
 	// https://substrate.dev/docs/en/knowledgebase/runtime/storage
 	#[pallet::storage]
-	#[pallet::getter(fn something)]
-	// Learn more about declaring storage items:
-	// https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
-	pub type Something<T> = StorageValue<_, u32>;
-
-	#[pallet::storage] 
+	#[pallet::getter(fn proofs)]
 	pub(super) type Proofs<T: Config> = StorageMap<_, Blake2_128Concat, Vec<u8>, (T::AccountId, T::BlockNumber), ValueQuery>; 
 
 	// Pallets use events to inform users when important changes are made.
@@ -43,6 +47,7 @@ pub mod pallet {
 		ClaimCreated(T::AccountId, Vec<u8>),
 		/// Event emitted when a claim is revoked by the owner. [who, claim]
 		ClaimRevoked(T::AccountId, Vec<u8>),
+		SwapRevoked(T::AccountId, T::AccountId),
 	}
 
 	// Errors inform users that something went wrong.
@@ -54,6 +59,7 @@ pub mod pallet {
 		NoSuchProof,
 		/// The proof is claimed by another account, so caller can't revoke it.
 		NotProofOwner,
+		ClaimMaxLenExcceed,
 	}
 
 	// Dispatchable functions allows users to interact with the pallet and invoke state changes.
@@ -74,6 +80,7 @@ pub mod pallet {
 		
 				// Verify that the specified proof has not already been claimed.         
 				ensure!(!Proofs::<T>::contains_key(&proof), Error::<T>::ProofAlreadyClaimed);
+				ensure!((proof.len() as u8) <= T::ClaimMaxLen::get(),Error::<T>::ClaimMaxLenExcceed);
 
 				// Get the block number from the FRAME System module.
 				let current_block = <frame_system::Pallet<T>>::block_number();
@@ -113,6 +120,17 @@ pub mod pallet {
 				Self::deposit_event(Event::ClaimRevoked(sender, proof));
 
 				Ok(().into())
+		}
+
+		#[pallet::weight(10_000)]
+		pub fn transfer_claim(origin: OriginFor<T>, claim: Vec<u8>, dest: T::AccountId) -> DispatchResultWithPostInfo{
+			let sender = ensure_signed(origin)?;
+			let (owner, _block_number) = Proofs::<T>::get(&claim);
+
+			ensure!(owner == sender, Error::<T>::NotProofOwner);
+			Proofs::<T>::insert(&claim,(dest.clone(),frame_system::Pallet::<T>::block_number()));
+			Self::deposit_event(Event::SwapRevoked(sender, dest));
+			Ok(().into())
 		}
 	}
 }
